@@ -1,0 +1,427 @@
+#!/bin/sh
+#============================================================================
+# putaway
+#
+# Version = 0.2.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/doaway.html
+#
+# Description:
+#    This script uses scp to copy a file to a list of remote hosts. The copys
+#     happen in parallel. No output will be displayed from the remote 
+#     machines on you screen.
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  . ${CONFIG}
+else
+  SCRIPT_PATH="/usr/bin"
+  #LOGFILE="/var/log/runit.log"
+  #SSH_PORT="22"
+fi
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: description  ###############################
+putaway_description() {
+  echo "Description:  
+          This script uses scp to copy a file to a list of remote hosts. The copys
+           happen in parallel. No output will be displayed from the remote 
+           machines on you screen.
+  "
+  echo
+}
+
+##########  Function: usage  #####################################
+putaway_usage() {
+  echo "Usage:  "
+  echo '  putaway -l <hostlist> -f <source file> -d <destination file>'
+  echo
+  echo "  Options:"
+  echo "             -H    Comma delimited list of hosts or IP addresses to deploy to"
+  echo "             -l    file containg a list of hosts"
+  echo "                     One host per line or multiple hosts per line"
+  echo "             -f    path of source file to be copied"
+  echo "             -d    absolute path to file to be copied to on the receiver"
+  echo "             -u    user to perform action on client as"
+  echo "             -p    ssh server port number"
+  echo "             -h    help (this message)"
+  echo
+  echo "  Examples:  "
+  echo '   putaway -l hostlist srcfile destfile'
+  echo '   putaway -H host1,host2,host3 srcfile destfile'
+  echo
+}
+
+##########  Function: get_options  #####################################
+
+##########  Function: check_ssh_agent  #################################
+check_ssh_agent() {
+  if set | grep -q "SSH_AGENT_PID"
+  then
+    NUM_STORED_KEYS=`ssh-add -l | cut -d " " -f 3 | wc -w`
+    NUM_KEYS=`ls ~/.ssh/|egrep 'identity$|id_rsa$|id_dsa$' | wc -w`
+    
+    # Test to see if all ssh keys are storred in ssh-agent
+    if [ "$NUM_STORED_KEYS" -lt "$NUM_KEYS" ]
+    then
+      echo "Adding SSH keys to ssh-agent:"
+      echo
+      ssh-add
+    fi
+  else
+    echo "Launching ssh-agent."
+    eval `ssh-agent -s`
+    echo "Adding SSH keys to ssh-agent:"
+    echo
+    ssh-add
+  fi
+}
+
+##########  Function: get_options  #####################################
+putaway_get_options() {
+  while getopts "H:l:f:d:u:p:h" OPTIONS
+  do
+    case $OPTIONS in
+      H)
+        HOST_LIST="$OPTARG"
+      ;;
+      l)
+        HOST_LIST_FILE="$OPTARG"
+      ;;
+      f)
+        FILE=$OPTARG
+      ;;
+      d)
+        DESTINATION=$OPTARG
+      ;;
+      u)
+        REMOTE_USER=$OPTARG
+      ;;
+      p)
+        SSH_PORT=$OPTARG
+      ;;
+      h)
+        putaway_description
+        putaway_usage
+        exit 0
+      ;;
+    esac
+  done
+
+  # check if host list file exists and load HOST_LIST variable with it
+  if ! [ -z "$HOST_LIST_FILE" ] && [ -e "$HOST_LIST_FILE" ]
+  then
+    HOST_LIST="`cat $HOST_LIST_FILE`"
+  fi
+  
+  # remove commas from host list
+  if `echo $HOST_LIST | grep -q ","`
+  then
+    HOST_LIST=`echo $HOST_LIST | sed 's/,/ /g'`
+  fi
+
+}
+
+##########  Function: check_run_putaway_wizard  ########################
+putaway_check_run_putaway_wizard() {
+  if [ -z "$FILE" ]
+  then
+    putaway_wizard
+  elif [ -z "$DESTINATION" ]
+  then
+    putaway_wizard
+  elif [ -z "$HOST_LIST" ]
+  then
+    putaway_wizard
+  else
+    REMOTE_USER="$USER"
+    SSH_PORT="22"
+  fi
+}
+
+##########  Function: putaway_wizard  ##################################
+putaway_wizard() {
+  echo " ========================================================================"
+  echo "                        Starting putaway wizard"
+  echo " ========================================================================"
+  echo
+  if [ -z "$FILE" ]
+  then
+    local GETFILE=1
+    while [ "$GETFILE" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "   What file do you want to copy?"
+      echo " -----------------------------------------------------------"
+      echo -n " []:";read -e FILE
+      if [ -z "$FILE" ]
+      then
+	echo " You must enter a file name"
+      elif ! [ -e "$FILE" ]
+      then
+	echo " The file you specified does not exist"
+      else
+	GETFILE=0
+        echo
+      fi
+    done
+  fi
+
+  if [ -z "$DESTINATION" ]
+  then
+    local GETDEST=1
+    while [ "$GETDEST" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "   Where do you want this file to be on the destination?"
+      echo
+      echo "    Note:  -Must be the absolute path to where you want"
+      echo "            the file on the remote machine(s)"
+      echo " -----------------------------------------------------------"
+      echo -n " []:";read -e DESTINATION
+      if [ -z "$DESTINATION" ]
+      then
+	echo " You must enter a destination for the file."
+      else
+	GETDEST=0
+        echo
+      fi
+    done
+  fi
+
+  if [ -z "$HOST_LIST" ]
+  then
+    local GETLIST=1
+    while [ "$GETLIST" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "   Do you have a hostlist file?"
+      echo " -----------------------------------------------------------"
+      echo -n " (Y|N) [Y]:";read -e HAVEFILE
+      if [ -z "$HAVEFILE" ]
+      then
+	HAVEFILE=Y
+        GETLIST=0
+        echo
+      else
+        case $HAVEFILE in
+          Y|y|Yes|YES|yes)
+	    HAVEFILE=Y
+	  ;;
+	  *)
+	    HAVEFILE=N
+	  ;;
+	esac
+	GETLIST=0
+        echo
+      fi
+      case $HAVEFILE in
+        Y|y|Yes|yes|Yes)
+	  local GETLIST_F=1
+	  while [ "$GETLIST_F" -eq "1" ]
+	  do
+	    echo
+	    echo " Enter the path to the hostlist file:"
+	    echo -n " []:";read -e HOST_LIST_FILE
+	    if [ -z "$HOST_LIST_FILE" ]
+	    then
+	      echo " You must specify the hostlist file."
+	    elif ! [ -e "$HOST_LIST_FILE" ]
+	    then
+	      echo " The file you specified doesn't exist"
+	    else
+	      HOST_LIST="`cat $HOST_LIST_FILE`"
+	      GETLIST_F=0
+	      GETLIST=0
+              echo
+	    fi
+	  done
+        ;;
+        *)
+	  local GETLIST_H=1
+	  while [ "$GETLIST_H" -eq "1" ]
+	  do
+	    echo
+	    echo " Enter a comma delimited list of IP Address or hostnames you wish to copy to:"
+	    echo -n " []:";read -e HOST_LIST
+	    if [ -z "$HOST_LIST" ]
+	    then
+	      echo " You must specify a list of hosts."
+	    else
+	      HOST_LIST=`echo $HOST_LIST | sed 's/,/ /g'`
+	      GETLIST_H=0
+	      GETLIST=0
+              echo
+	    fi
+	  done
+        ;;
+      esac
+    done
+  fi
+  echo " -----------------------------------------------------------"
+  echo "   Do you want to provide non-required options?"
+  echo "        -Remote User"
+  echo "        -SSH Port"
+  echo " -----------------------------------------------------------"
+  echo -n " (Y|N) [N]:";read DOEXTRA
+  case $DOEXTRA in
+    Y|y|Yes|yes)
+      echo
+      putaway_wizard_extra
+    ;;
+   *)
+      REMOTE_USER="$USER"
+      SSH_PORT="22"
+    ;;
+  esac
+}
+
+##########  Function: putaway_wizard_extra  ############################
+putaway_wizard_extra() {
+  if [ -z "$REMOTE_USER" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   What user do you wish to connect to the remote system as?"
+    echo " -----------------------------------------------------------"
+    echo -n " [$USER]:";read -e GETUSER
+    if [ -z "$GETUSER" ]
+    then
+      REMOTE_USER="$USER"
+    else
+      REMOTE_USER="$GETUSER"
+    fi
+    echo
+  fi
+
+  if [ -z "$SSH_PORT" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   What port is ssh listening on on the remote system?"
+    echo " -----------------------------------------------------------"
+    echo -n " [22]:";read -e GETPORT
+    if [ -z "$GETPORT" ]
+    then
+      SSH_PORT="22"
+    else
+      SSH_PORT="$GETPORT"
+    fi
+    echo
+  fi
+}
+
+##########  Function: print_actions  ###################################
+putaway_print_actions(){
+  echo
+  echo "##########################################################################"
+  echo
+  echo "Options provided:"
+  echo "--------------------------------------------------------------------------"
+  echo "  Source File:                = $FILE"
+  echo "  Destination File            = $DESTINATION"
+  echo "  Remote User                 = $REMOTE_USER"
+  echo "  SSH Port                    = $SSH_PORT"
+  echo
+  echo "Command:"
+  echo "scp -p $SSH_PORT $FILE $REMOTE_USER@$REMOTE_HOST:$DESTINATION"
+  echo "--------------------------------------------------------------------------"
+  echo
+  echo "If this is correct press [Enter]"
+  echo "If this is not correct press [ctrl+c]"
+  read
+}
+
+##########  Function: parallel_scp  ####################################
+parallel_scp() {
+  echo "--------------------------------------------------------------------------"
+  echo "  Sending Files ..."
+  echo
+  local SFD_COUNT=`echo $FILE|grep -o "/"|wc -l`
+  ((SFD_COUNT++))
+  local SHORT_FILE=`echo $FILE|cut -d '/' -f $SFD_COUNT`
+  case $HOST_LIST in
+    *)
+      for REMOTE_HOST in $HOST_LIST
+      do
+        echo "Copying to:  $REMOTE_HOST"
+        screen -S "putaway-$SHORT_FILE-$REMOTE_HOST" -d -m scp -P "$SSH_PORT" "$FILE" "$REMOTE_USER"@"$REMOTE_HOST":"$DESTINATION"
+      done
+    ;;
+  esac
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+clear
+echo
+echo "|************************************************************************|"
+echo "|                               PutAway                                  |"
+echo "|************************************************************************|"
+echo
+echo "--------------------------------------------------------------------------"
+putaway_get_options $*
+
+putaway_check_run_putaway_wizard
+
+putaway_print_actions
+
+check_ssh_agent
+
+parallel_scp
+
+echo "--------------------------------------------------------------------------"
+echo "                               Finished"
+echo "--------------------------------------------------------------------------"
+
+exit 0

@@ -1,0 +1,933 @@
+#!/bin/sh
+#============================================================================
+# castaway
+#
+# Version = 1.1.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/castaway.html
+#
+# Description:
+#    This script uses udpcast to deploy files or disk images to multiple
+#     computers via multicast.  It allows you to launch a receiving session
+#     on a list of machines (using ssh and screen) an then a sending session
+#     on the server (the machine castaway is running on) with one command.
+#
+#    Two types of images can be deployed with this script:  
+#
+#      Disk images:    Disk images created by dd of an entire disk or 
+#                      partition to be imaged into a disk or partition on
+#                      the receiving machine (i.e. /dev/sda or /dev/sda1).
+#                      These images can be uncompressed disk images or disk 
+#                      images that have been compressed with gzip or bzip2.
+#
+#      Add-On Images:  Archives of files (tar, tar.gz, tar.bz2) to be 
+#                      extracted into a directory of your choice on the 
+#                      receiving machine.
+#                      The archives are sent compressed over the wire and
+#                      decompressed on the receiver to speed up the 
+#                      transfer.
+#
+#      Plain Files:    Plain files to be copied into a directory on the 
+#                      receiver.
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  . ${CONFIG}
+else
+  SCRIPT_PATH="/usr/bin"
+  CASTAWAY_LOGFILE="/var/log/castaway.log"
+  DEFAULT_UDPCAST_MAX_RETRIES="1000000"
+  DEFAULT_UDPCAST_BITRATE="1000"
+fi
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: description  ###############################
+castaway_description() {
+  echo "Description:  
+         This script uses udpcast to deploy files or disk images to multiple
+         computers via multicast.  It allows you to launch a receiving session
+         on a list of machines (using ssh and screen) an then a sending session 
+         on the server (the machine castaway is running on) with one command. 
+        
+         Two types of images can be deployed with this script: 
+
+         Disk images:    Disk images created by dd of an entire disk or 
+                         partition to be imaged into a disk or partition on
+                         the receiving machine (i.e. /dev/sda or /dev/sda1).
+                         These images can be uncompressed disk images or disk 
+                         images that have been compressed with gzip or bzip2.
+
+         Add-On Images:  Archives of files (tar, tar.gz, tar.bz2) to be 
+                         extracted into a directory of your choice on the 
+                         receiving machine.
+                         The archives are sent compressed over the wire and
+                         decompressed on the receiver to speed up the 
+                         transfer.
+
+         Plain Files:    Plain files to be copied into a directory on the 
+                         receiver.
+       " 
+  echo
+}
+
+##########  Function: usage  #####################################
+castaway_usage() {
+  echo "Usage:  "
+  echo "  castaway -H <host list> -f <image file> -t <image type> -d <destination> -i <interface>"
+  echo "  castaway -l <host list file> -f <image file> -t <image type> -d <destination> -i <interface>"
+  echo ""
+  echo "  Options:"
+  echo "             -H    Comma delimited list of hosts or IP addresses to deploy to"
+  echo "             -l    file containg a list of hosts"
+  echo "                     One host per line or multiple hosts per line"
+  echo "             -f    name of the image file to deploy"
+  echo "             -t    type of image file being deployed as follows:"
+  echo "                     Disk Images:"
+  echo "                      img      dd style disk image"
+  echo "                      img.gz   gzip compressed dd style disk image"
+  echo "                      img.bz2  bz2 compressed dd style disk image"
+  echo "                     Add-On Images:"
+  echo "                      tar      uncompressed tarball"
+  echo "                      tar.gz   gzipped tarball"
+  echo "                      tar.bz2  bz2 zipped tarball"
+  #echo "                     -zip      PKZIP zipped archive"
+  echo "                     Plain Files:"
+  echo "                      file     Plain file"
+  echo "             -d    destination file/directory on the receiver"
+  echo "                   Note:  You must specify the full path including the"
+  echo "                          file name when using -t file"
+  echo "             -i    network interface - sender (i.e. eth0 or eth1 etc.)"
+  echo "             -I    network interface - receiver (i.e. eth0 or eth1 etc.)"
+  echo "             -u    user to perform action on client as"
+  echo "             -p    ssh server port number"
+  echo "             -m    number of machines that must be connected to"
+  echo "                   automatically launch the session"
+  echo "             -w    maximum amount of time to wait before starting"
+  echo "                   the session"
+  echo "             -r    number of retries before dropping a client (default=$DEFAULT_UDPCAST_MAX_RETRIES)"
+  echo "             -b    maximum bitrate in Mb/s to use sending (default=$DEFAULT_UDPCAST_BITRATE)"
+  echo "             -k    kill receivers on specified hosts"
+  echo "             -h    help (this message)"
+
+  echo
+  echo "  Examples:  "
+  echo '   castaway -H "host1,host2,host3" -f vm1.tar.gz -t tar.gz -d /vms'
+  #echo '   castaway -H "host1,host2,host3" -f vm1.tar.bz2 -t tar.bz2 -d /vms'
+  echo '   castaway -l /root/hostlist -f vm1.tar.gz -t tar.gz -d /vms'
+  echo '   castaway -H "host1,host2,host3" -f server-sda.img -t img -d /dev/sda'
+  echo '   castaway -H "host1,host2,host3" -k'
+  echo
+}
+
+##########  Function: get_options  #####################################
+castaway_get_options() {
+  while getopts "H:l:f:t:d:i:I:m:w:r:b:u:p:kh" OPTIONS
+  do
+    case $OPTIONS in
+      H)
+        HOST_LIST="$OPTARG"
+      ;;
+      l)
+        HOST_LIST_FILE="$OPTARG"
+      ;;
+      f)
+        FILE=$OPTARG
+      ;;
+      t)
+        IMAGE_TYPE=$OPTARG
+      ;;
+      d)
+        DESTINATION=$OPTARG
+      ;;
+      i)
+        NET_INTERFACE=$OPTARG
+      ;;
+      I)
+        NET_INTERFACE_RCVR=$OPTARG
+      ;;
+      m)
+        MIN_HOSTS_1=$OPTARG
+      ;;
+      w)
+        MAX_TIME_1=$OPTARG
+      ;;
+      r)
+        MAX_RETRIES_1="$OPTARG"
+      ;;
+      r)
+        MAX_BITRATE_1="$OPTARG"
+      ;;
+      u)
+        REMOTE_USER=$OPTARG
+      ;;
+      p)
+        SSH_PORT=$OPTARG
+      ;;
+      k)
+        RCVR_MODE="kill"
+      ;;
+      h)
+        castaway_description
+        castaway_usage
+        exit 0
+      ;;
+    esac
+  done
+
+  # check if host list file exists and load HOST_LIST variable with it
+  if ! [ -z "$HOST_LIST_FILE" ] && [ -e "$HOST_LIST_FILE" ]
+  then
+    HOST_LIST="`cat $HOST_LIST_FILE`"
+  fi
+  
+  # remove commas from host list
+  if `echo $HOST_LIST | grep -q ","`
+  then
+    HOST_LIST=`echo $HOST_LIST | sed 's/,/ /g'`
+  fi
+  
+  ## check if remote user is set
+  #if [ -z $REMOTE_USER ] 
+  #then
+  #  REMOTE_USER="root"
+  #fi
+
+  # check if ssh port is set
+  #if [ -z $SSH_PORT ] 
+  #then
+  #  SSH_PORT="22"
+  #fi
+  
+  # check if remote interface is set
+  #if [ -z $NET_INTERFACE_RCVR ] 
+  #then
+  #  NET_INTERFACE_RCVR="eth0"
+  #fi
+  
+  # check if min-reveivers is set
+  if ! [ -z $MIN_HOSTS_1 ] 
+  then
+    MIN_HOSTS="--min-receivers $MIN_HOSTS_1"
+  fi
+  
+  # check if max-time is set
+  if ! [ -z $MAX_TIME_1 ] 
+  then
+    MAX_TIME="--max-wait $MAX_TIME_1"
+  fi
+  
+  # check if retries-until-drop is set
+  if [ -z $MAX_RETRIES_1 ] 
+  then
+    MAX_RETRIES="--retries-until-drop $DEFAULT_UDPCAST_MAX_RETRIES"
+    MAX_RETRIES_1="$DEFAULT_UDPCAST_MAX_RETRIES"
+  else
+    MAX_RETRIES="--retries-until-drop $MAX_RETRIES_1"
+  fi
+
+  # check if max-bitrate is set
+  if [ -z $MAX_BITRATE_1 ] 
+  then
+    MAX_BITRATE="--max-bitrate $DEFAULT_UDPCAST_BITRATE""m"
+    MAX_BITRATE_1="$DEFAULT_UDPCAST_BITRATE"
+  else
+    MAX_BITRATE="--max-bitrate $MAX_BITRATE_1"
+  fi
+}
+
+##########  Function: get_sender_interface  ###################################
+castaway_get_sender_interface() {
+  if [ -z "$NET_INTERFACE" ]
+  then
+    NET_INTERFACE=`ip route show | grep "default" | cut -d " " -f 5`
+    if [ -z "$NET_INTERFACE" ]
+    then
+      local IFACE_ARRAY=( `ip addr | grep "inet " | grep -v "127.0.0" | grep -m 1 "inet " | sed 's/^ *//g'` )
+      NET_INTERFACE=`ip addr | grep "inet " | grep -v "127.0.0" | grep -m 1 "inet " | sed 's/^ *//g' | cut -d " " -f ${#IFACE_ARRAY[@]}`
+    fi
+  fi
+}
+
+##########  Function: print_actions  ###################################
+castaway_print_actions(){
+  case $RCVR_MODE in
+    kill)
+      echo
+      echo "##########################################################################"
+      echo
+      echo "+---------------------+"
+      echo "|Mode = kill-receivers|"
+      echo "+---------------------+"
+      echo
+      echo "--------------------------------------------------------------------------"
+      echo  "  Server Command              = ssh -p $SSH_PORT -t $REMOTE_USER_PRNT@"'<HOST> <Client Command>'
+    ;;
+    *)
+      castaway_get_sender_interface
+
+      echo
+      echo "##########################################################################"
+      echo
+      echo "+--------------------+"
+      echo "|Mode = image-deploy |"
+      echo "+--------------------+"
+      echo
+      echo "Options provided:"
+      echo "--------------------------------------------------------------------------"
+      echo "Server Options:"
+      echo "  Network Interface           = $NET_INTERFACE"
+      echo "  Autostart connections #     = $MIN_HOSTS"
+      echo "  Wait Time before starting   = $MAX_TIME"
+      echo "  Retries before drop         = $MAX_RETRIES_1"
+      echo "  Remote User                 = $REMOTE_USER"
+      echo "  Server Command              = udp-sender $MIN_RECEIVERS $MAX_WAIT $MAX_RETRIES $MAX_BITRATE $INTERFACE --file $FILE"
+      echo "Client Options:"
+      echo "  HOST List                   = $HOST_LIST"
+      echo "  Source File                 = $FILE"
+      echo "  Image Type                  = $IMAGE_TYPE"
+      echo "  Destination directory/file  = $DESTINATION"
+      echo "  Network Interface           = $NET_INTERFACE_RCVR"
+    ;;
+  esac
+}
+
+##########  Function: set_command  #####################################
+castaway_set_command() {
+  case $IMAGE_TYPE in
+    tar)
+      MODE="--pipe"
+      COMMAND="tar -xSf - -C $DESTINATION"
+    ;;
+    tar.gz)
+      MODE="--pipe"
+      COMMAND="tar -xSzf - -C $DESTINATION"
+    ;;
+    tar.bz2)
+      MODE="--pipe"
+      COMMAND="tar -xSzf - -C $DESTINATION"
+    ;;
+    #zip)
+    #  MODE="--pipe"
+    #  COMMAND="unzip - -d $DESTINATION"
+    #;;
+    img)
+      MODE="--file"
+      COMMAND="$DESTINATION"
+    ;;
+    img.gz)
+      MODE="--pipe"
+      COMMAND="gunzip -|dd of=$DESTINATION"
+    ;;
+    img.bz2)
+      MODE="--pipe"
+      COMMAND="bunzip2 -|dd of=$DESTINATION"
+    ;;
+    file)
+      MODE="--file"
+      COMMAND="$DESTINATION"
+    ;;
+  esac
+  
+  if [ -z $NET_INTERFACE ]
+  then
+    INTERFACE=""
+  else
+    INTERFACE="--interface $NET_INTERFACE"
+  fi
+
+  if [ -z $NET_INTERFACE_RCVR ]
+  then
+    RCVR_IFACE=""
+  else
+    RCVR_IFACE="--interface $NET_INTERFACE_RCVR"
+  fi
+
+  if [ -z "$MIN_HOSTS" ]
+  then
+    MIN_RECEIVERS=""
+  else
+    MIN_RECEIVERS="--min-receivers $MIN_HOSTS"
+  fi
+
+  if [ -z "$MAX_TIME" ]
+  then
+    MAX_WAIT=""
+  else
+    MAX_WAIT="--max-wait $MAX_TIME"
+  fi
+
+  case $RCVR_MODE in
+    kill)
+      echo "  Client Command              = killall -9 screen;killall -9 udp-receiver"
+    ;;
+    *)
+      echo "  Client Command              = udp-receiver --interface "$NET_INTERFACE_RCVR" "$MODE" \"$COMMAND\""
+    ;;
+  esac
+  echo "--------------------------------------------------------------------------"
+  echo
+  echo "If this is correct press [Enter]"
+  echo "If this is not correct press [ctrl+c]"
+  read
+}
+
+##########  Function: check_vars  #####################################
+castaway_check_vars() {  
+  if [ -z $FILE ]
+  then
+    if ! [ "$RCVR_MODE" = "kill" ]
+    then
+      echo
+      echo "Error:  You must enter a file to deploy!"
+      echo
+      castaway_usage
+      exit 1
+    fi
+  fi
+  
+  if [ -z $IMAGE_TYPE ]
+  then
+    if ! [ "$RCVR_MODE" = "kill" ]
+    then
+      echo
+      echo "Error:  You must specify the image type!"
+      echo
+      castaway_usage
+      exit 1
+    fi
+  fi
+  
+  if [ -z $DESTINATION ]
+  then
+    if ! [ "$RCVR_MODE" = "kill" ]
+    then
+      echo
+      echo "Error:  You must specify the destination file/directory"
+      echo "        on the client!"
+      echo
+      castaway_usage
+      exit 1
+    fi
+  fi
+}
+
+##########  Function: check_ssh_agent  #################################
+check_ssh_agent() {
+  if set | grep -q "SSH_AGENT_PID"
+  then
+    NUM_STORED_KEYS=`ssh-add -l | cut -d " " -f 3 | wc -w`
+    NUM_KEYS=`ls ~/.ssh/|egrep 'identity$|id_rsa$|id_dsa$' | wc -w`
+    
+    # Test to see if all ssh keys are storred in ssh-agent
+    if [ "$NUM_STORED_KEYS" -lt "$NUM_KEYS" ]
+    then
+      echo "Adding SSH keys to ssh-agent:"
+      echo
+      ssh-add
+    fi
+  else
+    echo "Launching ssh-agent."
+    eval `ssh-agent -s`
+    echo "Adding SSH keys to ssh-agent:"
+    echo
+    ssh-add
+  fi
+}
+
+##########  Function: kill_receivers  #####################################
+castaway_kill_receivers() {
+  echo
+  echo "--------------------------------------------------------------------------"
+  echo "  Killing Receivers ..."
+  echo
+  for HOST in $HOST_LIST
+  do
+    echo "  Killing receiver on:  $HOST"
+    screen -S castaway_kill-$HOST -d -m ssh -p $SSH_PORT -t $REMOTE_USER@$HOST "killall -9 screen;killall -9 udp-receiver;sleep 1"
+    echo
+  done
+}
+
+##########  Function: launch_receivers  #####################################
+castaway_launch_receivers() {
+  echo
+  echo "--------------------------------------------------------------------------"
+  echo "  Launching Receivers ..."
+  echo
+  case $HOST_LIST in
+    *)
+      for HOST in $HOST_LIST
+      do
+        #echo "  ssh -t $HOST \"screen -S castaway_receiver-$HOST -d -m udp-receiver $MODE \\\"$COMMAND\\\"\""
+        echo "Launching:  $HOST"
+        screen -S castaway_receiver-$HOST -d -m ssh -p $SSH_PORT -t $REMOTE_USER@$HOST "screen -S castaway_receiver -d -m udp-receiver $RCVR_IFACE $MODE \"$COMMAND\";sleep 1"
+      done
+    ;;
+  esac
+}
+
+##########  Function: launch_sender  #####################################
+castaway_launch_sender() {
+  echo
+  echo "--------------------------------------------------------------------------"
+  echo "  Launching Sender ..."
+  echo
+  #echo "  udp-sender $MIN_RECEIVERS $MAX_WAIT $MAX_RETRIES $INTERFACE --file $FILE"
+  echo
+
+  echo "Image File: $FILE">>$CASTAWAY_LOGFILE
+  echo "Started Session: `date`">>$CASTAWAY_LOGFILE
+  echo "---------------------------------------">>$CASTAWAY_LOGFILE
+  udp-sender $MIN_RECEIVERS $MAX_WAIT $MAX_RETRIES $INTERFACE --log $CASTAWAY_LOGFILE --bw-period 10 --file $FILE
+  echo "Finshed Session: `date`">>$CASTAWAY_LOGFILE
+  echo "">>$CASTAWAY_LOGFILE
+}
+
+##########  Function: check_image_type  ################################
+castaway_check_image_type() {
+  if ! [ -z "$IMAGE_TYPE" ]
+  then
+    case $IMAGE_TYPE in
+      tar.gz)
+        if ! file "$FILE" | grep -qi "gzip compressed data"
+        then
+          echo
+          echo "ERROR:  Specified source file does not match specified image type: $IMAGE_TYPE"
+          echo
+          exit 2
+        fi
+      ;;
+      tar.bz2)
+        if ! file "$FILE" | grep -qi "bzip2 compressed data"
+        then
+          echo
+          echo "ERROR:  Specified source file does not match specified image type: $IMAGE_TYPE"
+          echo
+          exit 2
+        fi
+      ;;
+      tar)
+        if ! file "$FILE" | grep -qi "POSIX tar archive"
+        then
+          echo
+          echo "ERROR:  Specified source file does not match specified image type: $IMAGE_TYPE"
+          echo
+          exit 2
+        fi
+      ;;
+    esac
+  fi
+}
+
+##########  Function: check_run_castaway_wizard  #######################
+castaway_check_run_castaway_wizard() {
+  if [ -z $FILE ]
+  then
+    if ! [ "$RCVR_MODE" = "kill" ]
+    then
+      castaway_wizard
+    fi
+  elif [ -z $DESTINATION ]
+  then
+    if ! [ "$RCVR_MODE" = "kill" ]
+    then
+      castaway_wizard
+    fi
+  elif [ -z $IMAGE_TYPE ]
+  then
+    if ! [ "$RCVR_MODE" = "kill" ]
+    then
+      castaway_wizard
+    fi
+  elif [ -z $HOST_LIST ]
+  then
+    castaway_wizard
+  else
+    if [ -z $NET_INTERFACE ]
+    then
+      NET_INTERFACE="eth0"
+    fi
+    if [ -z $NET_INTERFACE_RCVR ]
+    then
+      NET_INTERFACE_RCVR="eth0"
+    fi
+    if [ -z $REMOTE_USER ]
+    then
+      REMOTE_USER="$USER"
+    fi
+    if [ -z $SSH_PORT ]
+    then
+      SSH_PORT="22"
+    fi
+  fi
+}
+
+##########  Function: castaway_wizard_extra  ###########################
+castaway_wizard_extra() {
+  if [ -z "$NET_INTERFACE" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   Which network interface do you wish to send out of on the server?"
+    echo " -----------------------------------------------------------"
+    echo -n " [eth0]:";read -e GETNETIFACE
+    if [ -z "$GETNETIFACE" ]
+    then
+      NET_INTERFACE=""
+    else
+      NET_INTERFACE="$GETNETIFACE"
+    fi
+    echo
+  fi
+
+  if [ -z "$NET_INTERFACE_RCVR" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   What network interface should the receiver listen on?"
+    echo " -----------------------------------------------------------"
+    echo -n " [eth0]:";read -e GETREMIFACE
+    if [ -z "$GETREMIFACE" ]
+    then
+      NET_INTERFACE_RCVR="eth0"
+    else
+      NET_INTERFACE_RCVR="$GETREMIFACE"
+    fi
+    echo
+  fi
+
+  if [ -z "$REMOTE_USER" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   What user do you wish to connect to the remote system as?"
+    echo " -----------------------------------------------------------"
+    echo -n " [$USER]:";read -e GETUSER
+    if [ -z "$GETUSER" ]
+    then
+      REMOTE_USER="$USER"
+    else
+      REMOTE_USER="$GETUSER"
+    fi
+    echo
+  fi
+
+  if [ -z "$SSH_PORT" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   What port is ssh listening on on the remote system?"
+    echo " -----------------------------------------------------------"
+    echo -n " [22]:";read -e GETPORT
+    if [ -z "$GETPORT" ]
+    then
+      SSH_PORT="22"
+    else
+      SSH_PORT="$GETPORT"
+    fi
+    echo
+  fi
+
+  if [ -z "$MIN_HOSTS_1" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   Number of hosts to wait for before auto-starting multicast:"
+    echo "    (leave empty for no auto-start)"
+    echo " -----------------------------------------------------------"
+    echo -n " []:";read -e GETMINHOSTS
+    if [ -z "$GETMINHOSTS" ]
+    then
+      echo " Will not auto-start multicast session with min hosts."
+    else
+      MIN_HOSTS_1="--min-receivers $GETMINHOSTS"
+    fi
+    echo
+  fi
+
+  if [ -z "$MAX_TIME_1" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   Maximum time to wait for before auto-starting multicast:"
+    echo "    (leave empty for no auto-start)"
+    echo " -----------------------------------------------------------"
+    echo -n " []:";read -e GETMAXTIME
+    if [ -z "$GETMAXTIME" ]
+    then
+      echo " Will not auto-start multicast session max time."
+    else
+      MAX_TIME_="--max-wait $GETMAXTIME"
+    fi
+    echo
+  fi
+
+}
+
+##########  Function: castaway_wizard  #################################
+castaway_wizard() {
+  echo " ========================================================================"
+  echo "                        Starting castaway wizard"
+  echo " ========================================================================"
+  echo
+  if [ -z "$FILE" ]
+  then
+    local GETFILE=1
+    while [ "$GETFILE" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "   What file do you want to multicast?"
+      echo " -----------------------------------------------------------"
+      echo -n " []:";read -e FILE
+      if [ -z "$FILE" ]
+      then
+	echo " You must enter a file name"
+      elif ! [ -e "$FILE" ]
+      then
+	echo " The file you specified does not exist"
+      else
+	GETFILE=0
+        echo
+      fi
+    done
+  fi
+
+  if [ -z "$IMAGE_TYPE" ]
+  then
+    local GETTYPE=1
+    while [ "$GETTYPE" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "   What type of file is this?"
+      echo " -----------------------------------------------------------"
+      echo
+      echo "   (i.e. How do you want to send this file?)"
+      echo
+      echo -n " (file|tar|tar.gz|tar.bz2|img) []:";read -e IMAGE_TYPE
+      if [ -z "$IMAGE_TYPE" ]
+      then
+	echo " You must enter a file type to send this file as"
+      else
+	GETTYPE=0
+        echo
+      fi
+    done
+  fi
+
+  if [ -z "$DESTINATION" ]
+  then
+    local GETDEST=1
+    while [ "$GETDEST" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "   Where do you want this file to be on the destination?"
+      echo " -----------------------------------------------------------"
+      echo
+      echo "   Note:  -If this is being sent as an archive, specify"
+      echo "           the directory to extract it into."
+      echo "          -If this is being sent as plain file, specify"
+      echo "           the directory and file name you want it to be."
+      echo
+      echo -n " []:";read -e DESTINATION
+      if [ -z "$DESTINATION" ]
+      then
+	echo " You must enter a destination for the file."
+      else
+	GETDEST=0
+        echo
+      fi
+    done
+  fi
+
+  if [ -z "$HOST_LIST" ]
+  then
+    local GETLIST=1
+    while [ "$GETLIST" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "   Do you have a hostlist file?"
+      echo " -----------------------------------------------------------"
+      echo -n " (Y|N) [Y]:";read -e HAVEFILE
+      if [ -z "$HAVEFILE" ]
+      then
+	HAVEFILE=Y
+        GETLIST=0
+        echo
+      else
+        case $HAVEFILE in
+          Y|y|Yes|YES|yes)
+	    HAVEFILE=Y
+	  ;;
+	  *)
+	    HAVEFILE=N
+	  ;;
+	esac
+	GETLIST=0
+        echo
+      fi
+      case $HAVEFILE in
+        Y|y|Yes|yes|Yes)
+	  local GETLIST_F=1
+	  while [ "$GETLIST_F" -eq "1" ]
+	  do
+	    echo
+	    echo " Enter the path to the hostlist file:"
+	    echo -n " []:";read -e HOST_LIST_FILE
+	    if [ -z "$HOST_LIST_FILE" ]
+	    then
+	      echo " You must specify the hostlist file."
+	    elif ! [ -e "$HOST_LIST_FILE" ]
+	    then
+	      echo " The file you specified doesn't exist"
+	    else
+	      HOST_LIST="`cat $HOST_LIST_FILE`"
+	      GETLIST_F=0
+	      GETLIST=0
+              echo
+	    fi
+	  done
+        ;;
+        *)
+	  local GETLIST_H=1
+	  while [ "$GETLIST_H" -eq "1" ]
+	  do
+	    echo
+	    echo " Enter a comma delimited list of IP Address or hostnames you wish to multicast to:"
+	    echo -n " []:";read -e HOST_LIST
+	    if [ -z "$HOST_LIST" ]
+	    then
+	      echo " You must specify a list of hosts."
+	    else
+	      HOST_LIST=`echo $HOST_LIST | sed 's/,/ /g'`
+	      GETLIST_H=0
+	      GETLIST=0
+              echo
+	    fi
+	  done
+        ;;
+      esac
+    done
+  fi
+  echo " -----------------------------------------------------------"
+  echo "   Do you want to provide non-required options?"
+  echo "        -Server Network Interface"
+  echo "        -Receiver Network Interface"
+  echo "        -Remote User"
+  echo "        -SSH Port"
+  echo "        -Auto-Start: Minimum Hosts"
+  echo "        -Auto-Start: Maximum Time"
+  echo " -----------------------------------------------------------"
+  echo -n " (Y|N) [N]:";read DOEXTRA
+  case $DOEXTRA in
+    Y|y|Yes|yes)
+      echo
+      castaway_wizard_extra
+    ;;
+   *)
+      if [ -z $NET_INTERFACE ]
+      then
+        NET_INTERFACE="eth0"
+      fi
+      if [ -z $NET_INTERFACE_RCVR ]
+      then
+        NET_INTERFACE_RCVR="eth0"
+      fi
+      if [ -z $REMOTE_USER ]
+      then
+        REMOTE_USER="$USER"
+      fi
+      if [ -z $SSH_PORT ]
+      then
+        SSH_PORT="22"
+      fi
+    ;;
+  esac
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+clear
+echo
+echo "|************************************************************************|"
+echo "|                               CastAway                                 |"
+echo "|************************************************************************|"
+echo
+
+castaway_get_options $*
+
+castaway_check_run_castaway_wizard
+
+castaway_print_actions
+
+castaway_check_vars
+
+castaway_check_image_type
+
+castaway_set_command
+
+check_ssh_agent
+echo
+
+clear
+
+case $RCVR_MODE in
+  kill)
+    castaway_kill_receivers
+  ;;
+  *)
+    castaway_launch_receivers
+    castaway_launch_sender
+  ;;
+esac
+
+echo "--------------------------------------------------------------------------"
+echo "  Finished"
+echo "--------------------------------------------------------------------------"
+
+exit 0

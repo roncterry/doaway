@@ -1,0 +1,184 @@
+#!/bin/bash
+
+#============================================================================
+# build-dhcpd-config
+#
+# Version = 0.2.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/deployit.html
+#
+# Description:
+#    This script uses a provided list of MAC addresses and displays to stdout
+#     a dhcpd.conf file with IP address and hostname reservations for those
+#     MAC addresses
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  . ${CONFIG}
+else
+  SUBNET_NETADDR="10.0.0"
+  SUBNET_HOSTADDR="0"
+  SUBNET_NETMASK="255.255.255.0"
+  ROUTERS="10.0.0.1"
+  SUBNET_MASK="255.255.255.0"
+  DOMAIN_NAME="example.com"
+  NAME_SERVERS="10.0.0.1, 8.8.8.8, 8.8.4.4"
+  WINS_SERVERS="10.0.0.1"
+  NTP_SERVERS="10.0.0.1"
+  ADDR_RANGE="10.0.0.11 10.0.0.100"
+  LEASE_TIME="21600"
+  MAX_LEASE_TIME="43200"
+  TFTP_SERVER="10.0.0.1"
+  RESERVATION_START_ADDR="101"
+  
+  DEFAULT_MACLIST=/var/lib/doaway/maclist
+fi
+
+if ! [ -z ${2} ]
+then
+ . ${2}
+fi
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: description  ###############################
+build_dhcp_config_description() {
+  echo "Description:  
+          This script uses a provided list of MAC addresses and displays to stdout
+           a dhcpd.conf file with IP address and hostname reservations for those
+           MAC addresses
+  "
+  echo
+}
+
+##########  Function: usage  #####################################
+build_dhcp_config_usage() {
+  echo "Usage:  "
+  echo '  build-dhcp-config <MAC_address_file> [dhcp_values_config_file]'
+  echo
+  echo "  Examples:  "
+  echo '   build-dhcp-config /root/Desktoop/MyMachines.MAC'
+  echo '   build-dhcp-config /root/Desktoop/MyMachines.MAC ~/my_dhcp_values.conf'
+  echo
+  echo '  Note:  A dhcp_values_config_file template can be found here:'
+  echo '         /usr/lib/doaway/templates/build-dhcp-config.conf.template'
+  echo
+}
+
+##########  Function: output_subnet_options  #####################
+build_dhcp_config_output_subnet_options() {
+  echo "
+  option routers		$ROUTERS;
+  option subnet-mask		$SUBNET_MASK;
+  option domain-name		\"$DOMAIN_NAME\";
+  option domain-name-servers	$NAME_SERVERS;
+  option netbios-name-servers	$WINS_SERVERS;
+  option ntp-servers 		$NTP_SERVERS;
+
+  range dynamic-bootp 		$ADDR_RANGE;
+  default-lease-time 		$LEASE_TIME;
+  max-lease-time 		$MAX_LEASE_TIME;
+
+  next-server $TFTP_SERVER;
+  filename \"pxelinux.0\";
+"
+}
+##########  Function: output_reservation_list  ###################
+build_dhcp_config_output_reservation_list() {
+  local COUNT=$RESERVATION_START_ADDR
+  for MAC in $(cat ${MACLIST}|grep -o ..\:..\:..\:..\:..\:..)
+  do
+    echo "host host$COUNT {
+    hardware ethernet $MAC;
+    fixed-address $SUBNET_NETADDR.$COUNT;
+    option host-name \"host$COUNT\";
+  }"
+  ((COUNT++))
+  done
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+if [ -z "${1}" ]
+then
+  MACLIST=${DEFAULT_MACLIST}
+else
+  case ${1} in
+    -h|--help|help)
+      echo
+      build_dhcp_config_description
+      build_dhcp_config_usage
+      exit 1
+    ;;
+    *)
+      MACLIST=${1}
+    ;;
+  esac
+fi
+
+#mv $DHCPD_CONF $DHCPD_CONF-`date +%Y%m%d%k%M%S`
+
+echo "ddns-update-style none;
+authoritative;
+
+subnet $SUBNET_NETADDR.$SUBNET_HOSTADDR netmask $SUBNET_NETMASK {"
+
+build_dhcp_config_output_subnet_options
+build_dhcp_config_output_reservation_list 
+
+echo "}"
+
+#echo ""> "$DHCPD_LEASES_FILE"
+
+exit 0

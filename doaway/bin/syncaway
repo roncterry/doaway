@@ -1,0 +1,613 @@
+#!/bin/sh
+#============================================================================
+# syncaway
+#
+# Version = 0.3.1
+# Date = 2015-11-10
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/doaway.html
+#
+# Description:
+#    This script uses screen and rsync to copy/sync a specified file/directory
+#     to a list of remote hosts in parallel.
+#    Allong with 'pushing' the file with rsync via ssh to the client, this 
+#     script can cause the client to 'pull' the file from a server with either 
+#     rsync via ssh or an rsync server.
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  . ${CONFIG}
+else
+  SCRIPT_PATH="/usr/bin"
+  #LOGFILE="/var/log/runit.log"
+  #SSH_PORT="22"
+  SERIAL=$$
+fi
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: description  ###############################
+syncaway_description() {
+  echo "Description:  
+          This script uses screen and rsync to copy/sync a specified file/directory
+           to a list of remote hosts in parallel.
+  "
+  echo
+}
+
+##########  Function: usage  #####################################
+syncaway_usage() {
+  echo "Usage:  "
+  echo '  syncaway [-s|S] [-r server] [-U rsync_user] -l <hostlist> -f <source file/dir> -d <destination file/dir>'
+  echo
+  echo "  Options:"
+  echo "             -H    Comma delimited list of hosts or IP addresses to deploy to"
+  echo "             -l    file containg a list of hosts"
+  echo "                     One host per line or multiple hosts per line"
+  echo "             -f    path of source file/directory to be copied"
+  echo "             -d    absolute path to file/directory to be copied to on the receiver"
+  echo "             -u    user to perform action on client as"
+  echo "             -U    rsync user to connect to server as"
+  echo "             -s    pull using rsync via ssh"
+  echo "             -S    pull using an rsync server"
+  echo "             -r    rsync server"
+  echo "             -p    ssh server port number"
+  echo "             -P    rsync server ssh server port number"
+  echo "             -h    help (this message)"
+  echo
+  echo "  Examples:  "
+  echo '   syncaway -l hostlist -f /source/file -d destination/file'
+  echo '   syncaway -H host1,host2,host3 -f /source/file -d destination/file'
+  echo '   syncaway -l hostlist -S -f Share/source/file -d destination/file'
+  echo '   syncaway -l hostlist -U user -S -f Share/source/file -d destination/file'
+  echo
+}
+
+##########  Function: check_ssh_agent  #################################
+check_ssh_agent() {
+  if set | grep -q "SSH_AGENT_PID"
+  then
+    NUM_STORED_KEYS=`ssh-add -l | cut -d " " -f 3 | wc -w`
+    NUM_KEYS=`ls ~/.ssh/|egrep 'identity$|id_rsa$|id_dsa$' | wc -w`
+    
+    # Test to see if all ssh keys are storred in ssh-agent
+    if [ "$NUM_STORED_KEYS" -lt "$NUM_KEYS" ]
+    then
+      echo "Adding SSH keys to ssh-agent:"
+      echo
+      ssh-add
+    fi
+  else
+    echo "Launching ssh-agent."
+    eval `ssh-agent -s`
+    echo "Adding SSH keys to ssh-agent:"
+    echo
+    ssh-add
+  fi
+}
+
+##########  Function: get_options  #####################################
+syncaway_get_options() {
+  while getopts "H:l:f:d:u:U:sSir:p:P:h" OPTIONS
+  do
+    case $OPTIONS in
+      H)
+        HOST_LIST="$OPTARG"
+      ;;
+      l)
+        HOST_LIST_FILE="$OPTARG"
+      ;;
+      f)
+        FILE=$OPTARG
+      ;;
+      d)
+        DESTINATION=$OPTARG
+      ;;
+      u)
+        REMOTE_USER=$OPTARG
+      ;;
+      U)
+        RSYNC_USER=$OPTARG
+      ;;
+      s)
+        RSYNC_TYPE=sshrsync
+      ;;
+      S)
+        RSYNC_TYPE=rsyncserver
+      ;;
+      r)
+        SERVER=$OPTARG
+      ;;
+      p)
+        SSH_PORT=$OPTARG
+      ;;
+      P)
+        RSYNC_SSH_PORT=$OPTARG
+      ;;
+      h)
+        syncaway_description
+        syncaway_usage
+        exit 0
+      ;;
+    esac
+  done
+
+  # check if host list file exists and load HOST_LIST variable with it
+  if ! [ -z "$HOST_LIST_FILE" ] && [ -e "$HOST_LIST_FILE" ]
+  then
+    HOST_LIST="`cat $HOST_LIST_FILE`"
+  fi
+  
+  # remove commas from host list
+  if `echo $HOST_LIST | grep -q ","`
+  then
+    HOST_LIST=`echo $HOST_LIST | sed 's/,/ /g'`
+  fi
+
+}
+
+##########  Function: check_run_syncaway_wizard  ########################
+syncaway_check_run_syncaway_wizard() {
+  if [ -z "$FILE" ]
+  then
+    syncaway_wizard
+  elif [ -z "$DESTINATION" ]
+  then
+    syncaway_wizard
+  elif [ -z "$HOST_LIST" ]
+  then
+    syncaway_wizard
+  else
+    if [ -z "$RSYNC_USER" ]
+    then
+      RSYNC_USER=doaway
+    fi
+    if [ -z "$REMOTE_USER" ]
+    then
+      REMOTE_USER="$USER"
+    fi
+    if [ -z "$RSYNC_SSH_PORT" ]
+    then
+      RSYNC_SSH_PORT=22
+    fi
+    if [ -z "$SSH_PORT" ]
+    then
+      SSH_PORT="22"
+    fi
+    if [ -z "$RSYNC_TYPE" ]
+    then
+      RSYNC_TYPE="sshrsyncpush"
+    fi
+    if [ -z "$SERVER" ]
+    then
+      SERVER="`hostname`"
+    fi
+  fi
+}
+
+##########  Function: syncaway_wizard  ##################################
+syncaway_wizard() {
+  echo " ========================================================================"
+  echo "                        Starting syncaway wizard"
+  echo " ========================================================================"
+  echo
+  if [ -z "$RSYNC_TYPE" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   What rsync method do you wish to use?"
+    echo
+    echo "    1 - rsync via ssh - push (default)"
+    echo "    2 - rsync via ssh - pull"
+    echo "    3 - rsync server - pull"
+    echo " -----------------------------------------------------------"
+    echo -n "(1|2|3) [1]:";read -e RSYNC_MODE
+    if [ -z "$RSYNC_MODE" ]
+    then
+      RSYNC_TYPE="sshrsyncpush"
+    else
+      case $RSYNC_MODE in
+        1)
+          RSYNC_TYPE="sshrsyncpush" 
+        ;;
+        2)
+          RSYNC_TYPE="sshrsync" 
+        ;;
+        3)
+          RSYNC_TYPE="rsyncserver" 
+        ;;
+        *)
+          RSYNC_TYPE="sshrsyncpush" 
+        ;;
+      esac
+    fi
+  fi
+
+  if [ -z "$FILE" ]
+  then
+    local GETFILE=1
+    while [ "$GETFILE" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "   What file/directory do you want to sync?"
+      echo
+      echo "   If you are using rsync via ssh (push or pull), the "
+      echo "    file/directory name must begin with a / and be the full"
+      echo "    path to the source (including filename if it is a file)"
+      echo "    on the server"
+      echo
+      echo "   If you are using an rsync server, the file/directory name"
+      echo "    must begin with the rsync \"share\" name and NOT begin"
+      echo "    with a / and the be that path relative to the \'share\""
+      echo "    (including the file name if it is a file) on the server"
+      echo
+      echo "    Note:  -If you want to sync the contents of a directory"
+      echo "            you must use a training slash."
+      echo " -----------------------------------------------------------"
+      echo -n " []:";read -e FILE
+      if [ -z "$FILE" ]
+      then
+	echo " You must enter a file/directory name"
+      else
+	GETFILE=0
+        echo
+      fi
+    done
+  fi
+
+  if [ -z "$DESTINATION" ]
+  then
+    local GETDEST=1
+    while [ "$GETDEST" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "  Where do you want to copy this file/directory to?"
+      echo
+      echo "   If you are using rsync via ssh (push or pull), the "
+      echo "    file/directory name must begin with a / and be the full"
+      echo "    path to the destination (including filename if it is a"
+      echo "    file)"
+      echo
+      echo " -----------------------------------------------------------"
+      echo -n " []:";read -e DESTINATION
+      if [ -z "$DESTINATION" ]
+      then
+	echo " You must enter a destination for the file/directory."
+      else
+	GETDEST=0
+        echo
+      fi
+    done
+  fi
+
+  if [ -z "$HOST_LIST" ]
+  then
+    local GETLIST=1
+    while [ "$GETLIST" -eq "1" ]
+    do
+      echo " -----------------------------------------------------------"
+      echo "   Do you have a hostlist file?"
+      echo " -----------------------------------------------------------"
+      echo -n " (Y|N) [Y]:";read -e HAVEFILE
+      if [ -z "$HAVEFILE" ]
+      then
+	HAVEFILE=Y
+        GETLIST=0
+        echo
+      else
+        case $HAVEFILE in
+          Y|y|Yes|YES|yes)
+	    HAVEFILE=Y
+	  ;;
+	  *)
+	    HAVEFILE=N
+	  ;;
+	esac
+	GETLIST=0
+        echo
+      fi
+      case $HAVEFILE in
+        Y|y|Yes|yes|Yes)
+	  local GETLIST_F=1
+	  while [ "$GETLIST_F" -eq "1" ]
+	  do
+	    echo
+	    echo " Enter the path to the hostlist file:"
+	    echo -n " []:";read -e HOST_LIST_FILE
+	    if [ -z "$HOST_LIST_FILE" ]
+	    then
+	      echo " You must specify the hostlist file."
+	    elif ! [ -e "$HOST_LIST_FILE" ]
+	    then
+	      echo " The file you specified doesn't exist"
+	    else
+	      HOST_LIST="`cat $HOST_LIST_FILE`"
+	      GETLIST_F=0
+	      GETLIST=0
+              echo
+	    fi
+	  done
+        ;;
+        *)
+	  local GETLIST_H=1
+	  while [ "$GETLIST_H" -eq "1" ]
+	  do
+	    echo
+	    echo " Enter a comma delimited list of IP Address or hostnames you wish to copy to:"
+	    echo -n " []:";read -e HOST_LIST
+	    if [ -z "$HOST_LIST" ]
+	    then
+	      echo " You must specify a list of hosts."
+	    else
+	      HOST_LIST=`echo $HOST_LIST | sed 's/,/ /g'`
+	      GETLIST_H=0
+	      GETLIST=0
+              echo
+	    fi
+	  done
+        ;;
+      esac
+    done
+  fi
+  echo " -----------------------------------------------------------"
+  echo "   Do you want to provide non-required options?"
+  echo "        -Remote User"
+  echo "        -Rsync User (ssh pull and rsync server only)"
+  echo "        -Rsync Server (rsync server only)"
+  echo "        -SSH Port"
+  echo "        -Rsync Server SSH Port (ssh pull and rsync server only)"
+  echo " -----------------------------------------------------------"
+  echo -n " (Y|N) [N]:";read DOEXTRA
+  case $DOEXTRA in
+    Y|y|Yes|yes)
+      echo
+      syncaway_wizard_extra
+    ;;
+   *)
+      if [ -z "$REMOTE_USER" ]
+      then
+        REMOTE_USER="$USER"
+      fi
+      if [ -z "$RSYNC_USER" ]
+      then
+        RSYNC_USER="doaway"
+      fi
+      if [ -z "$SSH_PORT" ]
+      then
+        SSH_PORT="22"
+      fi
+      if [ -z "$RSYNC_SSH_PORT" ]
+      then
+        RSYNC_SSH_PORT="22"
+      fi
+      if [ -z "$SERVER" ]
+      then
+        SERVER="`hostname`"
+      fi
+    ;;
+  esac
+}
+
+##########  Function: syncaway_wizard_extra  ############################
+syncaway_wizard_extra() {
+  if [ -z "$REMOTE_USER" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   What user do you wish to connect to the remote system as?"
+    echo " -----------------------------------------------------------"
+    echo -n " [$USER]:";read -e GETUSER
+    if [ -z "$GETUSER" ]
+    then
+      REMOTE_USER="$USER"
+    else
+      REMOTE_USER="$GETUSER"
+    fi
+    echo
+  fi
+
+  if [ -z "$SSH_PORT" ]
+  then
+    echo " -----------------------------------------------------------"
+    echo "   What port is ssh listening on on the remote system?"
+    echo " -----------------------------------------------------------"
+    echo -n " [22]:";read -e GETPORT
+    if [ -z "$GETPORT" ]
+    then
+      SSH_PORT="22"
+    else
+      SSH_PORT="$GETPORT"
+    fi
+    echo
+  fi
+
+  case $RSYNC_TYPE in
+    sshrsync|rsyncserver)
+      if [ -z "$RSYNC_USER" ]
+      then
+        echo " -----------------------------------------------------------"
+        echo "   What user do you wish to connect to the rsync server as?"
+        echo " -----------------------------------------------------------"
+        echo -n " [doaway]:";read -e GETRSYNCUSER
+        if [ -z "$GETRSYNCUSER" ]
+        then
+          RSYNC_USER="doaway"
+        else
+          RSYNC_USER="$GETRSYNCUSER"
+        fi
+        echo
+      fi
+  
+      if [ -z $SERVER ]
+      then
+        echo " -----------------------------------------------------------"
+        echo "   Enter the hostname or  IP address of the rsync server:"
+        echo " -----------------------------------------------------------"
+        echo -n "[`hostname`]:";read -e SERVER
+        if [ -z "$SERVER" ]
+        then
+          SERVER="`hostname`"
+        fi
+      fi
+  
+      if [ -z "$RSYNC_SSH_PORT" ]
+      then
+        echo " -----------------------------------------------------------"
+        echo "   What port is ssh listening on on the rsync server?"
+        echo
+        echo "   Note: Only for rsync via ssh.  If using an rsync server,"
+        echo "         just leave the default value as it will not be used"
+        echo " -----------------------------------------------------------"
+        echo -n " [22]:";read -e GETRSYNCPORT
+        if [ -z "$GETRSYNCPORT" ]
+        then
+          SSH_PORT="22"
+        else
+          SSH_PORT="$GETRSYNCPORT"
+        fi
+        echo
+      fi
+   ;;
+  esac
+}
+
+##########  Function: print_actions  ###################################
+syncaway_print_actions(){
+  echo
+  echo "##########################################################################"
+  echo
+  echo "Options provided:"
+  echo "--------------------------------------------------------------------------"
+  echo "  Source File/Directory:      = $FILE"
+  echo "  Destination File/Directory  = $DESTINATION"
+  echo "  Remote User                 = $REMOTE_USER"
+  echo "  Rsync User                  = $RSYNC_USER"
+  echo "  Server                      = $SERVER"
+  echo "  Rsync Type                  = $RSYNC_TYPE"
+  echo "  SSH Port                    = $SSH_PORT"
+  echo
+  echo "Command:"
+  case $RSYNC_TYPE in
+    sshrsyncpush)
+      echo "rsync -a --port=$RSYNC_SSH_PORT $FILE $RSYNC_USER@$SERVER:$DESTINATION"
+    ;;
+    sshrsync)
+      echo "ssh $REMOTE_USER@$REMOTE_HOST rsync -a --port=$RSYNC_SSH_PORT $RSYNC_USER@$SERVER:$FILE $DESTINATION"
+    ;;
+    rsyncserver)
+      echo "ssh $REMOTE_USER@$REMOTE_HOST rsync -a $RSYNC_USER@$SERVER::$FILE $DESTINATION"
+    ;;
+  esac
+  echo "--------------------------------------------------------------------------"
+  echo
+  echo "If this is correct press [Enter]"
+  echo "If this is not correct press [ctrl+c]"
+  read
+}
+
+##########  Function: parallel_rsync  ####################################
+parallel_rsync() {
+  echo "--------------------------------------------------------------------------"
+  echo "  Sending Files ..."
+  echo
+  local SFD_COUNT=`echo $FILE|grep -o "/"|wc -l`
+  ((SFD_COUNT++))
+  local SHORT_FILE=`echo $FILE|cut -d '/' -f $SFD_COUNT`
+  case $HOST_LIST in
+    *)
+      for REMOTE_HOST in $HOST_LIST
+      do
+        case $RSYNC_TYPE in
+          sshrsyncpush)
+            echo "Copying to:  $REMOTE_HOST"
+            screen -S "syncaway-$SHORT_FILE-$REMOTE_HOST" -d -m rsync -a --port=$SSH_PORT $FILE $REMOTE_USER@$REMOTE_HOST:$DESTINATION
+          ;;
+          sshrsync)
+            echo "Copying to:  $REMOTE_HOST"
+            screen -S "pullaway-$SHORT_FILE-$REMOTE_HOST" -d -m ssh "$REMOTE_USER"@"$REMOTE_HOST" "screen -S \"pullaway-$SHORT_FILE\" -d-m rsync -a --port=$SSH_PORT $RSYNC_USER@$SERVER:$FILE $DESTINATION"
+            #ssh "$REMOTE_USER"@"$REMOTE_HOST" "screen -S \"pullaway-$SHORT_FILE\" -d-m rsync -a --port=$SSH_PORT $RSYNC_USER@$SERVER:$FILE $DESTINATION"
+            #screen -S "pullaway-$SHORT_FILE-$REMOTE_HOST" -d -m ssh "$REMOTE_USER"@"$REMOTE_HOST" screen -S "pullaway-$SHORT_FILE" rsync -a --port="$SSH_PORT" "$RSYNC_USER"@"$SERVER":"$FILE" "$DESTINATION"
+          ;;
+          rsyncserver)
+            echo "Copying to:  $REMOTE_HOST"
+            screen -S "pullaway-$SHORT_FILE-$REMOTE_HOST" -d -m ssh "$REMOTE_USER"@"$REMOTE_HOST" "screen -S \"pullaway-$SHORT_FILE\" -d -m rsync -a $RSYNC_USER@$SERVER::$FILE $DESTINATION"
+            #ssh "$REMOTE_USER"@"$REMOTE_HOST" "screen -S \"pullaway-$SHORT_FILE\" -d -m rsync -a $RSYNC_USER@$SERVER::$FILE $DESTINATION"
+            #screen -S "pullaway-$SHORT_FILE-$REMOTE_HOST" -d -m ssh "$REMOTE_USER"@"$REMOTE_HOST" "rsync -a $RSYNC_USER@$SERVER::$FILE $DESTINATION"
+          ;;
+        esac
+      done
+    ;;
+  esac
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+clear
+echo
+echo "|***********************************************************************|"
+echo "|                             SyncAway                                  |"
+echo "|***********************************************************************|"
+echo
+echo "-------------------------------------------------------------------------"
+syncaway_get_options $*
+
+syncaway_check_run_syncaway_wizard
+
+syncaway_print_actions
+
+check_ssh_agent
+
+parallel_rsync
+
+echo "-------------------------------------------------------------------------"
+echo "                              Finished"
+echo "-------------------------------------------------------------------------"
+
+exit 0

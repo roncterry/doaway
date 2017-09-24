@@ -1,0 +1,173 @@
+#!/bin/bash
+#============================================================================
+# lookaway
+#
+# Version = 0.2.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/deployit.html
+#
+# Description:
+#    This script uses screen and vncviewer to view the desktop of a list
+#     of remote machines 
+#
+#============================================================================
+
+###############################################################################
+#              Read config files and set variables
+###############################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  . ${CONFIG}
+else
+  DEFAULT_HOSTLIST="/var/lib/doaway/hostlist"
+  DEFAULT_LOOKAWAY_MODE=parallel
+  VIEWER_CMD="vncviewer"
+  VIEWER_OPTS=
+fi
+
+###############################################################################
+#                        Script Functions
+###############################################################################
+
+##########  Function: description ###############################
+lookaway_description() {
+  echo "Description:
+           This script uses screen and vncviewer to view the desktop of a list
+            of remote hosts.
+"
+}
+
+##########  Function: usage #####################################
+lookaway_usage() {
+  echo "Usage:  lookaway [-p|-s] [<hostlist>]"
+  echo
+  echo "    -p      -parallel mode"
+  echo "    -s      -serial mode"
+}
+
+##########  Function: test_for_valid_mode #######################
+lookaway_test_for_valid_mode() {
+  case ${1} in
+    -p)
+      VMODE=parallel
+    ;;
+    -s)
+      VMODE=serial
+    ;;
+    *)
+      VMODE=
+    ;;
+  esac
+  echo ${VMODE}
+}
+
+##########  Function: test_for_valid_hostlist ###################
+lookaway_test_for_valid_hostlist() {
+  if ! [ -f ${HOSTLIST} ]
+  then
+    echo
+    echo "Error:  The supplied hostlist file does not exist"
+    echo
+    exit 2
+  fi
+}
+
+###############################################################################
+#                       Main Code Body 
+###############################################################################
+
+if [ -z ${1} ]
+then
+  echo "Error:  You must proide a mode and/or a hostlist file"
+  echo
+  lookaway_description
+  lookaway_usage
+  exit 1
+elif [ -z ${2} ]
+then
+  MODE=$(test_for_valid_mode $*)
+  if [ -z ${MODE} ]
+  then
+    MODE=${DEFAULT_LOOKAWAY_MODE}
+    HOSTLIST=${1}
+    lookaway_test_for_valid_hostlist $*
+  else
+    if [ -f "${DEFAULT_HOSTLIST}" ]
+    then
+      HOSTLIST="${DEFAULT_HOSTLIST}"
+    fi
+  fi
+else
+  MODE=$(test_for_valid_mode $*)
+  if [ -z ${MODE} ]
+  then
+    echo
+    echo "ERROR: ${1} is not a valid mode"
+    echo
+    lookaway_description
+    lookaway_usage
+    echo
+    exit 1
+  fi
+  HOSTLIST=${2}
+  lookaway_test_for_valid_hostlist $*
+fi
+
+case ${MODE} in
+  parallel)
+    for i in `cat ${HOSTLIST}`
+    do 
+      echo "Connecting to: ${i} ..."
+      screen -S vnc-${i} -d -m ${VIEWER_CMD} ${VIEWER_OPTS} ${i}
+    done
+  ;;
+  serial)
+    for i in `cat ${HOSTLIST}`
+    do 
+      echo "Connecting to: ${i} ..."
+      ${VIEWER_CMD} ${VIEWER_OPTS} ${i}
+    done
+  ;;
+esac

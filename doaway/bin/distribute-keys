@@ -1,0 +1,205 @@
+#!/bin/bash
+
+#============================================================================
+# distribute-keys
+#
+# Version = 0.1.4
+# Date = 2015-11-10
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/deployit.html
+#
+# Description:
+#    This script uses ssh-copy-id to distribute ssh key(s) to a list of 
+#     machines and add them to the user's authorized_keys file
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+SSH_DIR="${HOME}/.ssh"
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: description  ###############################
+distribute_keys_description() {
+  echo "Description:  
+          This script uses ssh-copy-id to distribute ssh key(s) to a list of
+           machines and add them to the user's authorized_keys file.
+  " 
+  echo
+}
+
+##########  Function: usage  #####################################
+distribute_keys_usage() {
+  echo
+  echo "Usage:  "
+  echo "      distribute-keys -k <key> -u <user> -l <hostlist file>"
+  echo "      distribute-keys -k <key> -u <user> -H <host list>"
+  echo
+  echo "  Options:"
+  echo "             -k    Path to the public key"
+  echo "             -u    User to upload key to"
+  echo "             -l    Host list file"
+  echo "             -p    Remote user's password (when sshpass is available)"
+  echo "             -H    Comma delimited list of hosts"
+  echo
+}
+
+##########  Function: get_options  #####################################
+distribute_keys_get_options() {
+
+  while getopts "H:l:k:u:p:h" OPTIONS
+  do
+    case $OPTIONS in
+      H)
+        HOST_LIST="$OPTARG"
+        INPUT="list"
+      ;;
+      l)
+        HOST_LIST_FILE="$OPTARG"
+        INPUT="file"
+      ;;
+      k)
+        KEY_FILE="$OPTARG"
+      ;;
+      u)
+        REMOTE_USER="$OPTARG"
+      ;;
+      p)
+        USER_PASSWORD="$OPTARG"
+      ;;
+      h)
+        distribute_keys_description
+        distribute_keys_usage
+        exit 0
+      ;;
+    esac
+  done
+
+  if ! [ -z $HOST_LIST_FILE ] && [ -e $HOST_LIST_FILE ]
+  then
+    HOST_LIST="`cat $HOST_LIST_FILE`"
+  fi
+  
+  if `echo $HOST_LIST | grep -q ","`
+  then
+    HOST_LIST=`echo $HOST_LIST | sed 's/,/ /g'`
+  fi
+
+  if [ -z $REMOTE_USER ]
+  then
+    REMOTE_USER="root"
+  fi
+  
+  if [ -z $KEY_FILE ]
+  then
+    if [ -e "$SSH_DIR"/id_rsa.pub ]
+    then
+      KEY_FILE="$SSH_DIR"/id_rsa.pub
+    elif [ -e "$SSH_DIR"/id_dsa.pub ]
+    then
+      KEY_FILE="$SSH_DIR"/id_dsa.pub
+    else
+      KEY_FILE="$SSH_DIR"/identity.pub
+    fi
+  fi
+}
+
+##########  Function: get_password  ####################################
+distribute_keys_get_password() {
+  if which sshpass > /dev/null
+  then
+    if [ -z $USER_PASSWORD ]
+    then
+      echo "Enter the password for user: $REMOTE_USER"
+      echo -n "password:> ";read -s USER_PASSWORD
+    fi
+    #export SSHPASS="${USER_PASSWORD}"
+    #SSHPASS_FILE="~/.sshpass_passwd"
+    #echo ${SSHPASS} >> ${SSHPASS_FILE}
+    #SSHPASS_CMD="sshpass -e"
+    #SSHPASS_CMD="sshpass -f ${SSHPASS_FILE}"
+    SSHPASS_CMD="sshpass -p ${USER_PASSWORD}"
+  fi
+}
+
+##########  Function: copy_keys  #######################################
+distribute_keys_copy_keys() {
+  for HOST in `echo $HOST_LIST`
+  do
+    echo
+    echo "----------------------------"
+    echo "HOST: ${HOST}"
+    echo "----------------------------"
+    echo
+    ${SSHPASS_CMD} ssh-copy-id -i "$KEY_FILE" "$REMOTE_USER"@"$HOST"
+    echo
+  done
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+echo
+echo "|***********************************************************************|"
+echo "|                            distribute-keys                            |"
+echo "|***********************************************************************|"
+echo
+
+distribute_keys_get_options $*
+
+if [ -z "$1" ]
+then  
+  distribute_keys_description 
+  distribute_keys_usage
+  exit 0
+fi
+
+distribute_keys_get_password
+
+distribute_keys_copy_keys
+
+exit 0

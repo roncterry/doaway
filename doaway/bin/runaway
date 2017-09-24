@@ -1,0 +1,236 @@
+#!/bin/sh
+#============================================================================
+# runaway
+#
+# Version = 1.1.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/doaway.html
+#
+# Description:
+#    This script uses screen and ssh to run a command or series of commands on
+#     one or more remote hosts in parallel.  No output will be displayed from 
+#     the remote machines on your screen.
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  . ${CONFIG}
+else
+  SCRIPT_PATH="/usr/bin"
+  #LOGFILE="/var/log/runit.log"
+  SSH_PORT="22"
+fi
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: description  ###############################
+runaway_description() {
+  echo "Description:  
+          This script uses screen and ssh to run a command or series of commands on
+           one or more remote hosts in parallel.  No output will be displayed from
+           the remote machines on your screen.
+  "
+  echo
+}
+
+##########  Function: usage  #####################################
+runaway_usage() {
+  echo "Usage:  "
+  echo '  runaway <user> [list:<hostlist>|file:<hostlist_file>] "<command list>" <output_file>'
+  echo
+  echo "  Examples:  "
+  echo '   runaway root file:/path/to/hostlist/file "command;command;command"'
+  echo '   runaway root list:host1,host2,host3 "command;command;command"'
+  echo '   runaway bob file:/path/to/hostlist/file "command;command;command" /tmp/hostname'
+  echo
+}
+
+##########  Function: check_ssh_agent  #################################
+check_ssh_agent() {
+  if set | grep -q "SSH_AGENT_PID"
+  then
+    NUM_STORED_KEYS=`ssh-add -l | cut -d " " -f 3 | wc -w`
+    NUM_KEYS=`ls ~/.ssh/|egrep 'identity$|id_rsa$|id_dsa$' | wc -w`
+    
+    # Test to see if all ssh keys are storred in ssh-agent
+    if [ "$NUM_STORED_KEYS" -lt "$NUM_KEYS" ]
+    then
+      echo "Adding SSH keys to ssh-agent:"
+      echo
+      ssh-add
+    fi
+  else
+    echo "Launching ssh-agent."
+    eval `ssh-agent -s`
+    echo "Adding SSH keys to ssh-agent:"
+    echo
+    ssh-add
+  fi
+}
+
+##########  Function: parse_operands  ###################################
+runaway_parse_operands() {
+  # see if any operands were provided
+  if [ -z $1 ]
+  then
+    runaway_description
+    runaway_usage
+    exit 0
+  fi
+  
+  # make sure enough operands were provided
+  if [ -z $3 ]
+  then
+    echo "Error:  You must provide the user to run as, a list of hosts and the command(s) to run"
+    echo
+    runaway_usage
+    exit 1
+  fi
+
+  # set REMOTE_USER
+  REMOTE_USER="$1"
+  
+  # check for type of hostlist (file|list|generate)
+  if echo "$2" | grep -q "file:"
+  then
+    INPUT="file"
+    HOST_LIST_FILE="`echo $2|cut -d ':' -f 2`"
+    if ! [ -e "$HOST_LIST_FILE" ]
+    then
+      echo "Error:  The specified hostlist file does not exist"
+      exit 1
+    fi
+  elif echo "$2" | grep -q "list:"
+  then
+    INPUT="list"
+    HOST_LIST="$2"
+    if `echo $HOST_LIST | grep -q ","`
+    then
+      HOST_LIST=`echo $HOST_LIST | sed 's/,/ /g'`
+    fi
+  elif echo "$2" | grep -q "generate:"
+  then
+    INPUT="generated"
+  fi
+
+  # set COMMAND
+  shift
+  shift
+  COMMAND="$*"
+
+  # set OUTPUT_FILE
+  
+}
+
+##########  Function: remote_execute  ##################################
+remote_execute() {
+  case $INPUT in
+    file)
+      echo "Command:"  
+      echo ssh -p $SSH_PORT $REMOTE_USER@{} "$COMMAND"
+      echo
+      echo "Hosts:"
+      cat $HOST_LIST_FILE
+      #cat $HOST_LIST_FILE | xargs -i screen -S runaway -d -m ssh -p $SSH_PORT $REMOTE_USER@{} "$COMMAND" >> $OUTPUT_FILE
+      for REMOTE_HOST in `cat $HOST_LIST_FILE`
+      do
+        screen -S runaway-$REMOTE_HOST -d -m ssh -p $SSH_PORT $REMOTE_USER@$REMOTE_HOST "$COMMAND" >> /var/tmp/$REMOTE_HOST-$$
+      done
+    ;;
+    list)
+      echo "Command:"  
+      echo ssh -p $SSH_PORT $REMOTE_USER@{} "$COMMAND"
+      echo
+      echo "Hosts:"
+      echo $HOST_LIST
+      #echo $HOST_LIST | xargs -i screen -S runaway -d -m ssh -p $SSH_PORT $REMOTE_USER@{} "$COMMAND" >> $OUTPUT_FILE
+      for REMOTE_HOST in `echo $HOST_LIST`
+      do
+        screen -S runaway-$REMOTE_HOST -d -m ssh -p $SSH_PORT $REMOTE_USER@$REMOTE_HOST "$COMMAND" >> /var/tmp/$REMOTE_HOST-$$
+      done
+    ;;
+    generated)
+      echo "Command:"  
+      echo ssh -p $SSH_PORT $REMOTE_USER@{} "$COMMAND"
+      echo
+      echo "Hosts:"
+      "$SCRIPT_PATH"/listaway | sort
+      #"$SCRIPT_PATH"/listaway | sort | xargs -i screen -S runaway -d -m ssh -p $SSH_PORT $REMOTE_USER@{} "$COMMAND" >> $OUTPUT_FILE
+      for REMOTE_HOST in `"$SCRIPT_PATH"/listaway | sort`
+      do
+        screen -S runaway-$REMOTE_HOST -d -m ssh -p $SSH_PORT $REMOTE_USER@$REMOTE_HOST "$COMMAND" >> /var/tmp/$REMOTE_HOST-$$
+      done
+    ;;
+  esac
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+clear
+echo
+echo "|***********************************************************************|"
+echo "|                              RunAway                                  |"
+echo "|***********************************************************************|"
+echo
+echo "--------------------------------------------------------------------------"
+runaway_parse_operands $*
+
+check_ssh_agent
+
+remote_execute
+
+echo "-------------------------------------------------------------------------"
+echo "  Finished"
+echo "-------------------------------------------------------------------------"
+
+exit 0

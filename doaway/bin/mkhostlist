@@ -1,0 +1,307 @@
+#!/bin/bash
+#============================================================================
+# mkhostlist
+#
+# Version = 0.6.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/deployit.html
+#
+# Description:
+#    This script uses ssh-keyscan to generate a list of hosts that are powered
+#     on and their ssh daemon listening.
+#    mkhostlist can generate 3 files:
+#       <hostlist>          -list of IP addresses (default), 1 per line
+#       <hostlist.MAC       -list of MAC address that match the IP addresses 
+#                            in the <hostlist> file (-m only), 1 per line
+#       <hostlist>.MAC-IP   -File containing a semi-colon delimited list of
+#                            MAC addresses and IP addresses (-m only), 1 set per line
+#                            Format = <MAC Address>;<IP Address>;;
+#                            Note:  The 2 extra fields on the line are reserved
+#                                   for future use
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  . ${CONFIG}
+else
+  SCRIPT_PATH="/usr/bin"
+  DEFAULT_SSH_PORT="22"
+  DEFAULT_RANGE_START="2"
+  DEFAULT_RANGE_END="253"
+fi
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: description  ###############################
+mkhostlist_description() {
+  echo "Description:  
+          This script uses ssh-keyscan to generate a list of hosts that are powered
+           on and their ssh daemon listening.
+
+          mkhostlist can generate 3 files:
+            <hostlist>          -list of IP addresses (default), 1 per line
+            <hostlist>.MAC      -list of MAC address that match the IP addresses 
+                                 in the <hostlist> file (-m only), 1 per line
+            <hostlist>.MAC-IP   -File containing a semi-colon delimited list of
+                                 MAC addresses and IP addresses (-m only), 1 set per line
+                                 Format = <MAC Address>;<IP Address>;;
+                                 Note:  The 2 extra fields on the line are reserved
+                                        for future use
+  " 
+  echo
+}
+
+##########  Function: usage  #####################################
+mkhostlist_usage() {
+  echo "Usage:  "
+  echo "  mkhostlist -n <network> -r <range> -p <ssh port> -l <hostlist file>"
+  echo ""
+  echo "  Options:"
+  echo "             -n    (optional) - network to scan"
+  echo "                     (if not specified it defaults to the network that the"
+  echo "                     first ethernet card is connected to)"
+  echo "             -r    (optional) - Comma seperated pair of numbers, "
+  echo "                     the first number being the begining address to scan"
+  echo "                     and the second number being the last number to scan"
+  echo "                     (if not specified it defaults to 1,253)"
+  echo "             -l    file to write the list of hosts into"
+  echo "             -d    create a default hostlist file"
+  echo "                   (/etc/doaway.conf: DEFAULT_HOSTLIST=/var/lib/doaway/hostlist"
+  echo "             -i    interface to scan on"
+  echo "             -p    ssh server port number"
+  echo "                     (if not specified it defaults to /tmp/list.now.\$\$)"
+  echo "             -m    build MAC address lists as well"
+  echo "             -h    help (this message)"
+  echo
+  echo "  Examples:  "
+  echo '   mkhostlist -i br0 -l "~/host.list"'
+  echo '   mkhostlist -n 10.0.0 -r "1,253" -l "~/host.list"'
+  echo '   mkhostlist -m -l "~/host.list"'
+  echo '   mkhostlist -n 172.16 -r "0.0,16.253" -l "~/host.list"'
+  echo
+}
+
+##########  Function: get_options  #####################################
+mkhostlist_get_options() {
+  while getopts "n:r:l:f:i:p:hmd" OPTIONS
+  do
+    case $OPTIONS in
+      n)
+        NETWORK="$OPTARG"
+      ;;
+      r)
+        if echo "$OPTARG" | grep "-"
+        then
+          RANGE="`echo $OPTARG|sed 's/-/ /g'`"
+        fi
+        if echo "$OPTARG" | grep ","
+        then
+          RANGE="`echo $OPTARG|sed 's/,/ /g'`"
+        fi
+        if echo "$OPTARG" | grep " "
+        then
+          RANGE="$OPTARG"
+        fi
+      ;;
+      l|f)
+        FILE_NAME="$OPTARG"
+      ;;
+      d)
+        FILE_NAME="${DEFAULT_HOSTLIST}"
+      ;;
+      i)
+        IFACE="$OPTARG"
+      ;;
+      p)
+        SSH_PORT="$OPTARG"
+      ;;
+      m)
+        GET_MACS="Y"
+      ;;
+      h)
+        mkhostlist_description
+        mkhostlist_usage
+        exit 0
+      ;;
+    esac
+  done
+
+  if [ -z "$FILE_NAME" ]
+  then
+    FILE_NAME="${DEFAULT_HOSTLIST}"
+  fi
+
+  if [ -z "$RANGE" ]
+  then
+    RANGE="${DEFAULT_RANGE_START} ${DEFAULT_RANGE_END}"
+  fi
+  
+  if [ -z "$SSH_PORT" ]
+  then
+    SSH_PORT="${DEFAULT_SSH_PORT}"
+  fi
+  
+  if [ -z "$NETWORK" ]
+  then
+    get_network
+  fi
+
+  echo
+  echo "----------------------------------------------------------------"
+  echo "Addresses to scan:  $NETWORK.`echo $RANGE|cut -d ' ' -f 1`:$SSH_PORT - $NETWORK.`echo $RANGE|cut -d ' ' -f 2`:$SSH_PORT"
+  echo "File name:          $FILE_NAME"
+  echo "----------------------------------------------------------------"
+  echo
+
+}
+##########  Function: get_network  #####################################
+get_network(){
+  if [ -z "$IFACE" ]
+  then
+    IFACE=`ip route show | grep default|cut -d " " -f 5`
+    if [ -z "$IFACE" ]
+    then
+      if ip addr show | grep mtu | grep br0 | grep -q UP
+      then
+        IFACE=br0
+      elif ip addr show | grep mtu | grep eth0 | grep -q UP
+      then
+        IFACE=eth0
+      fi
+    fi
+  fi
+  NET_and_SNM=$(ip route show | grep "$IFACE" | head -1 | cut -d " " -f 1)
+  case $NET_and_SNM in
+    default)
+      DEFAULT_IFACE=$(ip route show | grep "^default" | cut -d " " -f 5)
+      NET_and_SNM=$(ip r s | grep -v "^default" | grep wlp4s0 | cut -d " " -f 1)
+      NETID=$(echo "$NET_and_SNM"|cut -d "/" -f 1)
+      SNM=$(echo "$NET_and_SNM"|cut -d "/" -f 2)
+    ;;
+    *)
+      NETID=$(echo "$NET_and_SNM"|cut -d "/" -f 1)
+      SNM=$(echo "$NET_and_SNM"|cut -d "/" -f 2)
+    esac
+  
+  case $SNM in
+    24)
+      NETWORK=`echo "$NET_and_SNM"|cut -d "." --output-delimiter=. -f 1,2,3`
+    ;;
+    16)
+      NETWORK=`echo "$NET_and_SNM"|cut -d "." --output-delimiter=. -f 1,2`
+    ;;
+    8)
+      NETWORK=`echo "$NET_and_SNM"|cut -d "." --output-delimiter=. -f 1`
+    ;;
+    *)
+      echo
+      echo "Subnet Mask is not on a byte boundry."
+      echo "You must specify a network."
+      echo
+      echo "Network Interface: ${IFACE}"
+      echo
+      echo "Available networks:"
+      for I in $(ip a | grep "^[0-99]" | grep -v " lo" | grep -v \@ | cut -d \: -f 2)
+      do 
+        echo " ${I}:"
+        echo -n "  "
+        ip a s dev ${I} | grep "inet " | sed 's/^ *//' |cut -d " " -f 2
+        echo
+      done
+      exit 1
+    ;;
+  esac
+}
+
+##########  Function: get_mac_addrs  ###################################
+get_mac_addrs() {
+  rm -f "$FILE_NAME".MAC > /dev/null 2&>1
+  rm -f "$FILE_NAME".MAC-IP > /dev/null 2&>1
+  for ADDR in `cat $FILE_NAME`
+  do
+    ping -c 1 $ADDR > /dev/null
+    local MAC=`/sbin/arp -a | grep $ADDR | cut -d " " -f 4`
+    echo "$MAC" >> "$FILE_NAME".MAC
+    echo "$MAC"\;"$ADDR"\;\; >> "$FILE_NAME".MAC-IP
+  done
+}
+
+##########  Function: make_host_list  ##################################
+make_host_list() {
+  for ADDR in `seq $RANGE`
+  do
+    echo "$NETWORK"."$ADDR" >> /tmp/mkhostlist.$$
+  done
+  
+  ssh-keyscan -p $SSH_PORT -t rsa -T 1 -f /tmp/mkhostlist.$$ 2>&1 | awk '{print $1}' |grep -v \\\# | grep ".*\\..*\\..*\\..*" | sort | tee $FILE_NAME
+  echo
+  
+  rm /tmp/mkhostlist.$$
+  
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+echo
+echo "|************************************************************************|"
+echo "|                               mkhostlist                               |"
+echo "|************************************************************************|"
+echo
+
+mkhostlist_get_options $*
+
+make_host_list
+
+test "$GET_MACS" = "Y" && get_mac_addrs
+
+exit 0

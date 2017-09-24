@@ -1,0 +1,121 @@
+#!/bin/bash
+
+#============================================================================
+# populate-known_hosts
+#
+# Version = 0.2.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/deployit.html
+#
+# Description:
+#    This script uses ssh-keyscan to retrieve the host keys of a list of 
+#     machines and add them to the user's known_hosts file
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  . ${CONFIG}
+else
+  DEFAULT_HOSTLIST=/var/lib/doaway/hostlist
+  KEY_TYPE="rsa"
+  WAIT_TIME="1"
+  KNOWN_HOSTS="$HOME/.ssh/known_hosts"
+fi
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: description  ###############################
+populate_known_hosts_description() {
+  echo "Description:  
+          This script uses ssh-keyscan to retrieve the host keys of a list of
+           machines and add them to the user's known_hosts file.
+  " 
+  echo
+}
+
+##########  Function: usage  #####################################
+populate_known_hosts_usage() {
+  echo
+  echo "Usage:  populate-known_hosts <hostlist file>"
+  echo
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+echo
+echo "|***********************************************************************|"
+echo "|                          populate-known_hosts                         |"
+echo "|***********************************************************************|"
+echo
+
+if [ -e ${DEFAULT_HOSTLIST} ]
+then
+  HOST_LIST_FILE="${DEFAULT_HOSTLIST}"
+elif [ -z "$1" ]
+then
+  echo "Error:  You must provide a hostlist file"
+  echo
+  populate_known_hosts_description
+  populate_known_hosts_usage
+  exit 1
+else
+  if [ -e "$1" ]
+  then
+    HOST_LIST_FILE="$1"
+  else
+    echo "Error:  The supplied hostlist file does not exist"
+    exit 2
+  fi
+fi
+
+ssh-keyscan -t "$KEY_TYPE" -T "$WAIT_TIME"  -f "$HOST_LIST_FILE" >> "$KNOWN_HOSTS"

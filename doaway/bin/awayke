@@ -1,0 +1,184 @@
+#!/bin/bash
+#============================================================================
+# awayke
+#
+# Version = 0.2.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/deployit.html
+#
+# Description:
+#    This script uses the wol command to wake a list of machines using
+#     wake-on-lan magic packets.
+#    If the network ID (IP Address) is not supplied on the command line,
+#     the magic packets will be sent out on each network your machine is
+#     connected to.
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e {$CONFIG} ]
+then
+  . ${CONFIG}
+else
+  SCRIPT_PATH="/usr/bin"
+fi
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: description  ###############################
+awayke_description() {
+  echo "Description:  
+          This script uses the wol command to wake a list of machines using
+           wake-on-lan magic packets.
+          If the network ID (IP Address) is not supplied on the command line,
+           the magic packets will be sent out on each network your machine is
+           connected to..
+  " 
+  echo
+}
+
+##########  Function: usage  #####################################
+awayke_usage() {
+  echo "Usage:  "
+  echo "  awayke [ -M <mac addr list> | -l <maclist file> ] -i <network ID>"
+  echo ""
+  echo "  Options:"
+  echo "             -M    comma delimited list of MAC addresses"
+  echo "             -l    file containing a list of MAC addresses"
+  echo "             -i    Network ID (IP Address) of network to send the"
+  echo "                   magic packets on"
+  echo "             -h    help (this message)"
+  echo
+  echo "  Examples:  "
+  echo '   awayke -M 00:11:22:aa:bb:cc,44:55:66:dd:ee:ff'
+  echo '   awayke -l hostlist.MAC'
+  echo
+}
+
+##########  Function: get_options  #####################################
+awayke_get_options() {
+  while getopts "M:l:i:h" OPTIONS
+  do
+    case $OPTIONS in
+      M)
+        MACLIST="$OPTARG"
+	MACLIST=`echo $MACLIST | sed 's/,/ /g'`
+      ;;
+      l)
+	MACLIST="`cat $OPTARG`"
+      ;;
+      i)
+        NETID="$OPTARG"
+      ;;
+      h)
+        awayke_description
+        awayke_usage
+        exit 0
+      ;;
+    esac
+  done
+
+  if [ -z "$MACLIST" ]
+  then
+    echo
+    echo "ERROR:  You must specify a list of MAC address or a file containing MAC addresses."
+    echo
+    awayke_description
+    awayke_usage
+    exit 1
+  fi
+  
+  if [ -z "$NETID" ]
+  then
+    #if echo $MACLIST | grep .*\..*\..*\..*
+    #then 
+    #  
+    #fi
+    NETID=`ip route show | grep "link" | grep "kernel" | egrep  'eth|br' | cut -d "/" -f 1`
+  fi
+
+}
+
+##########  Function: wake_machines  ###################################
+awayke_wake_machines() {
+  for NETWORK in `echo $NETID`
+  do
+    echo
+    echo "-------------------------------------------------------"
+    echo " Sending Magic Packet on Network: $NETWORK"
+    echo "-------------------------------------------------------"
+    for MAC in `echo $MACLIST`
+    do
+      if echo $MACLIST|grep -q ";" && ! [ -z `echo $MACLIST|cut -d ";" -f 4` ]
+      then
+	local PASSWORD="--passwd=`echo $MACLIST|cut -d ";" -f 4`"
+      fi
+      if echo $MAC | grep -qo ..\:..\:..\:..\:..\:..
+      then
+        wol -i $NETWORK $PASSWORD `echo $MAC | grep -o ..\:..\:..\:..\:..\:..` 
+      fi
+    done
+  done
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+echo
+echo "|************************************************************************|"
+echo "|                                 Awayke                                 |"
+echo "|************************************************************************|"
+echo
+
+awayke_get_options $*
+
+awayke_wake_machines
+
+exit 0

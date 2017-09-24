@@ -1,0 +1,154 @@
+#!/bin/bash
+#============================================================================
+# mkmaclist-from-hosts
+#
+# Version = 0.2.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/deployit.html
+#
+# Description:
+#    This script generates a MAC address list from a file containing a list
+#     of hostnames or IP addresses.
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  . ${CONFIG}
+else
+
+  SCRIPT_PATH="/usr/bin"
+
+  DEFAULT_HOSTLIST=/var/lib/doaway/hostlist
+  DEFAULT_MACLIST=/var/lib/doaway/maclist
+  DEFAULT_INTERFACE=eth0
+fi
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+mkmaclist_from_hosts_usage() {
+  echo "USAGE:  ${0} [host_list_file] [interface] [mac_list_file]"
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+if [ -z ${1} ]
+then
+  HOSTLIST=${DEFAULT_HOSTLIST}
+else
+  case ${1} in
+    -h|--help|help)
+      echo
+      mkmaclist_from_hosts_usage
+      echo
+      exit
+    ;;
+    default|def)
+      HOSTLIST=${DEFAULT_HOSTLIST}
+    ;;
+    *)
+      HOSTLIST=${1}
+    ;;
+  esac
+fi
+
+if [ -z ${2} ]
+then
+  IFACE=${DEFAULT_INTERFACE}
+else
+  case ${2} in
+    default|def)
+      IFACE=${DEFAULT_INTERFACE}
+    ;;
+    *)
+      IFACE=${2}
+    ;;
+  esac
+fi
+
+if [ -z ${3} ]
+then
+  MACLIST=${DEFAULT_MACLIST}
+else
+  case ${3} in
+    default|def)
+      MACLIST=${DEFAULT_MACLIST}
+    ;;
+    *)
+      MACLIST=${3}
+    ;;
+  esac
+fi
+
+echo
+echo "|***********************************************************************|"
+echo "|                           mkmaclist                                   |"
+echo "|***********************************************************************|"
+echo
+
+echo "Hosts:"
+cat ${HOSTLIST}
+echo
+echo "-----------------------------------------------------------------------"
+echo "Interface:           ${IFACE}"
+echo "Hostlist File Name:  ${HOSTLIST}"
+echo "MAClist File Name:   ${MACLIST}"
+echo "-----------------------------------------------------------------------"
+echo
+
+rm -f ${MACLIST}
+
+for I in $(cat ${HOSTLIST})
+do
+  ssh ${I} ip addr show dev ${IFACE} | grep 'link/ether' | sed 's/^ *//' | cut -d ' ' -f 2 | tee -a ${MACLIST}
+done
+

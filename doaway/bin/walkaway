@@ -1,0 +1,289 @@
+#!/bin/sh
+#============================================================================
+# walkaway
+#
+# Version = 1.2.0
+# Date = 2015-09-01
+#
+# License (New and Simplified BSD):
+# ---------------------------------
+# Copyright (c) 2010, Ron Terry
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright notice,
+#      this list of conditions and the following disclaimer.
+#
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+#    * Neither the name of Ron Terry nor the names of its contributors
+#      may be used to endorse or promote products derived from this software
+#      without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# All elements of the doaway.sh embedded payload are governed by the above
+# licensing restrictions, unless explicitely stated otherwise.
+#===============================================================================
+#
+# Maintainer(s) = Ron Terry - roncterry (at) gmail (dot) com
+#
+# The latest version can be found at:
+#
+#    http://pronetworkconsulting.com/linux/scripts/doaway.html
+#
+# Description:
+#    This script uses ssh to run a command or series of commands on one or more
+#     remote hosts in a serial fashion.
+#    When executed your are placed  at a walkaway> prompt where you can enter a
+#     command or series of commands (seperated by ; ) that will be executed 
+#     on the list of host provided.  After the commands are executed
+#     remotly you are returned to the walkaway> prompt.  To exit enter 'quit'.
+#
+#============================================================================
+
+################################################################################
+#              Read config files and set variables 
+################################################################################
+
+CONFIG=/etc/doaway.conf
+
+if [ -e ${CONFIG} ]
+then
+  .${CONFIG}
+else
+  SCRIPT_PATH="/usr/bin"
+  #WALKAWAY_LOGFILE="/var/log/walkaway.log"
+fi
+
+################################################################################
+#                        Script Functions  
+################################################################################
+
+##########  Function: usage  #####################################
+walkaway_usage() {
+  echo "Usage:  "
+  #echo "  walkaway -l <host list file> -c \"<command>;<command>;<command>\""
+  #echo "  walkaway -H <list of hosts> -c \"<command>;<command>;<command>\""
+  echo "  walkaway -H <list of hosts>"
+  echo "  walkaway -l <host list file>"
+  echo ""
+  echo "  Options:"
+  echo "             -H    comma delimited list of hosts or IP addresses to run"
+  echo "                    the command(s) on"
+  echo "             -l    file containg a list of hosts to run command(s) on"
+  echo "                     One host per line or multiple hosts per line"
+  #echo "             -c    semicolon delimited list of commands to run on the hosts"
+  echo "             -u    user to run command(s) as on the hosts"
+  echo "                      If not set command(s) are run as the root user"
+  echo "             -p    ssh server port number"
+  echo "             -h    help (this message)"
+  echo
+  echo "  Examples:  "
+  #echo '   walkaway -H "host1,host2,host3" -c "hostname;shutdown -h now"'
+  #echo '   walkaway -H "host1,host2,host3" -c eject'
+  #echo '   walkaway -l /tmp/hostlist -c eject'
+  echo '   walkaway -H "host1,host2,host3"'
+  echo '   walkaway -l /tmp/hostlist'
+  echo
+  #echo "Note:  You might want to run the ssh-agent and the ssh-add to cache"
+  #echo "       your ssh keys. (i.e. eval \`ssh-agent -s\`;ssh-add)"
+  #echo
+}
+
+##########  Function: get_options  #####################################
+walkaway_get_options() {
+
+  while getopts "H:l:gc:u:p:h" OPTIONS
+  do
+    case $OPTIONS in
+      H)
+        HOST_LIST="$OPTARG"
+        INPUT="list"
+      ;;
+      l)
+        HOST_LIST_FILE="$OPTARG"
+        INPUT="file"
+      ;;
+      g)
+        INPUT="generated"
+      ;;
+      #c)
+      #  COMMAND="$OPTARG"
+      #;;
+      u)
+        REMOTE_USER="$OPTARG"
+      ;;
+      p)
+        SSH_PORT=$OPTARG
+      ;;
+      h)
+        walkaway_usage
+        exit 0
+      ;;
+    esac
+  done
+
+  if ! [ -z $HOST_LIST_FILE ] && [ -e $HOST_LIST_FILE ]
+  then
+    HOST_LIST="`cat $HOST_LIST_FILE`"
+  fi
+  
+  if `echo $HOST_LIST | grep -q ","`
+  then
+    HOST_LIST=`echo $HOST_LIST | sed 's/,/ /g'`
+  fi
+
+  if [ -z $REMOTE_USER ]
+  then
+    REMOTE_USER="root"
+  fi
+
+  if [ -z $SSH_PORT ] 
+  then
+    SSH_PORT="22"
+  fi
+  
+  #if [ -z $COMMAND ]
+  #then
+  #  usage
+  #  exit 1
+  #fi
+}
+
+##########  Function: check_ssh_agent  #################################
+check_ssh_agent() {
+  if set | grep -q "SSH_AGENT_PID"
+  then
+    NUM_STORED_KEYS=`ssh-add -l | cut -d " " -f 3 | wc -w`
+    NUM_KEYS=`ls ~/.ssh/|egrep 'identity$|id_rsa$|id_dsa$' | wc -w`
+    
+    # Test to see if all ssh keys are storred in ssh-agent
+    if [ "$NUM_STORED_KEYS" -lt "$NUM_KEYS" ]
+    then
+      echo "Adding SSH keys to ssh-agent:"
+      echo
+      ssh-add
+    fi
+  else
+    echo "Launching ssh-agent."
+    eval `ssh-agent -s`
+    echo "Adding SSH keys to ssh-agent:"
+    echo
+    ssh-add
+  fi
+}
+
+##########  Function: check_vars  #####################################
+walkaway_check_vars() {
+  if [ -z "$HOST_LIST" ] 
+  then
+    echo
+    echo "Error:  You must enter a list of hosts to execute"
+    echo "        commands on!"
+    echo
+    walkaway_usage
+    exit 1
+  fi
+}
+
+##########  Function: run_it  #####################################
+run_it() {
+  #PS1_ORIG="echo $PS1"
+  echo
+  echo "Enter the command(s) to run (or 'quit' to exit):"
+  #export PS1="walkaway> "
+  echo -n "walkaway> "
+  read -e COMMAND
+  case $COMMAND in
+    quit)
+      DOIT="quit"
+    ;;
+    *)
+      case $INPUT in
+        file)
+          echo
+	  for REMOTE_HOST in `cat $HOST_LIST_FILE`
+	  do
+	    echo "-----------------------------------------------------------------------------"
+	    echo "   HOST: $REMOTE_HOST"
+	    echo "-----------------------------------------------------------------------------"
+	    ssh -p $SSH_PORT $REMOTE_USER@$REMOTE_HOST "$COMMAND"
+	    echo
+	  done
+          #cat $HOST_LIST_FILE | xargs -i ssh -p $SSH_PORT $REMOTE_USER@{} "$COMMAND"
+        ;;
+        list)
+          echo
+	  for REMOTE_HOST in $HOST_LIST
+	  do
+	    echo "-----------------------------------------------------------------------------"
+	    echo "   HOST: $REMOTE_HOST"
+	    echo "-----------------------------------------------------------------------------"
+	    ssh -p $SSH_PORT $REMOTE_USER@$REMOTE_HOST "$COMMAND"
+	    echo
+	  done
+          echo
+          #echo $HOST_LIST | xargs -i ssh -p $SSH_PORT $REMOTE_USER@{} "$COMMAND"
+        ;;
+        generated)
+          HOST_LIST=`"$SCRIPT_PATH"/mkhostlist | sort`
+          echo
+	  for REMOTE_HOST in $HOST_LIST
+	  do
+	    echo "-----------------------------------------------------------------------------"
+	    echo "   HOST: $REMOTE_HOST"
+	    echo "-----------------------------------------------------------------------------"
+	    ssh -p $SSH_PORT $REMOTE_USER@$REMOTE_HOST "$COMMAND"
+	    echo
+	  done
+          echo
+          #"$SCRIPT_PATH"/mkhostlist | sort | xargs -i ssh -p $SSH_PORT $REMOTE_USER@{} "$COMMAND"
+        ;;
+      esac
+    ;;
+  esac
+  #export PS1="${PS1_ORIG} "
+}
+
+################################################################################
+#                  Main Code Body
+################################################################################
+
+clear
+echo
+echo "|***********************************************************************|"
+echo "|                             WalkAway                                  |"
+echo "|***********************************************************************|"
+echo
+echo "-------------------------------------------------------------------------"
+walkaway_get_options $*
+
+walkaway_check_vars
+
+check_ssh_agent
+
+until [ "$DOIT" = "quit" ]
+do
+  run_it
+done
+
+echo
+echo "-------------------------------------------------------------------------"
+echo "  Finished"
+echo "-------------------------------------------------------------------------"
+
+exit 0
